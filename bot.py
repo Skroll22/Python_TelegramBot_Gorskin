@@ -1,16 +1,20 @@
 import datetime
-
-from pyexpat.errors import messages
+from enum import Enum, auto
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler
 from secrets import API_TOKEN
 from db import get_conn
 from typing import Tuple, List
 
-REGISTER_PASSWORD = 1
+class States(Enum):
+    REGISTER = auto()
+    ADD_EVENT = auto()
+    VIEW_EVENTS = auto()
+    DELETE_EVENT = auto()
 
 class Calendar:
     def __init__(self):
         self.conn = get_conn()
+        self.user_states = {}
 
     async def register_user(self, user_id: int, username: str, first_name: str, last_name: str, password: str) -> bool:
         try:
@@ -27,7 +31,7 @@ class Calendar:
                     ''', (user_id, username, first_name, last_name, password)
                 )
                 self.conn.commit()
-                return cursor.fetchall() is not None
+                return cursor.fetchone() is not None
         except Exception as e:
             print(f'Ошибка регистрации пользователя: {e}')
             return False
@@ -76,7 +80,7 @@ class Calendar:
         try:
             with self.conn.cursor() as cursor:
                 cursor.execute(
-                    '''SELECT event_name, event_date
+                    '''SELECT event_name, TO_CHAR(event_date, 'DD.MM.YYYY')
                     FROM events
                     WHERE user_id = %s
                     ORDER BY event_date''',
@@ -103,11 +107,17 @@ class Calendar:
             return False
 
 async def start(update, context):
-    calendar = Calendar()
+    calendar = context.bot_data['calendar']
     user = update.message.from_user
-    await update.message.reply_text("Привет! Я календарный бот.\n"
-                                    "Напишите /register для регистрации\n"
-                                    "или /addevent для добавления события.")
+    calendar.user_states[user.id] = None
+    await update.message.reply_text(
+        "Привет! Я календарный бот.\n"
+        "Доступные команды:\n"
+        "/register - регистрация\n"
+        "/addevent - добавить событие\n"
+        "/events - просмотреть события\n"
+        "/delevent - удалить событие"
+    )
 
     await calendar._ensure_user_exists(
         user_id=user.id,
@@ -117,7 +127,7 @@ async def start(update, context):
     )
 
 async def register(update, context):
-    calendar = Calendar()
+    calendar = context.bot_data['calendar']
     user = update.message.from_user
 
     if await calendar.is_user_registered(user.id):
@@ -125,13 +135,13 @@ async def register(update, context):
         return ConversationHandler.END
 
     await update.message.reply_text("Придумайте пароль:")
-    return REGISTER_PASSWORD
+    return States.REGISTER
 
 
 async def register_password(update, context):
     calendar = Calendar()
     user = update.message.from_user
-    password = update.message.text  # Получаем текст пароля от пользователя
+    password = update.message.text
 
     if await calendar.register_user(
             user_id=user.id,
@@ -146,90 +156,127 @@ async def register_password(update, context):
 
     return ConversationHandler.END
 
+
 async def add_event(update, context):
-    calendar = Calendar()
-    user_id = update.message.from_user.id
+    user = update.message.from_user
+    calendar = context.bot_data['calendar']
+    calendar.user_states[user.id] = States.ADD_EVENT
 
-    if len(context.args) < 2:
-        await update.message.reply_text("Используйте: '/addevent <название> <дата в формате ДД-ММ-ГГГГ>'")
-        return
+    await update.message.reply_text(
+        "Введите название и дату события в формате:\n"
+        "Название Дата(ДД.ММ.ГГГГ)\n"
+        "Например: Встреча 15.12.2025"
+    )
+    return States.ADD_EVENT
 
-    event_name = ' '.join(context.args[:-1])
-    event_date = context.args[-1]
+async def handle_add_event(update, context):
+    user = update.message.from_user
+    calendar = context.bot_data['calendar']
 
     try:
-        datetime.datetime.strptime(event_date, "%d-%m-%Y")
-    except ValueError:
-        await update.message.reply_text("Неверный формат даты. Используйте ДД-ММ-ГГГГ")
-        return
+        event_name, event_date = update.message.text.rsplit(' ', 1)
+        datetime.datetime.strptime(event_date, '%d.%m.%Y')
 
-    if await calendar.add_event(
-        user_id=user_id,
-        username=update.message.from_user.username,
-        first_name=update.message.from_user.first_name,
-        last_name=update.message.from_user.last_name,
-        event_name=event_name,
-        event_date=event_date
-    ):
-        await update.message.reply_text(f"Событие '{event_name}' на {event_date} добавлено!")
-    else:
-        await update.message.reply_text("Ошибка при добавлении события")
+        if await calendar.add_event(
+                user_id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                event_name=event_name,
+                event_date=event_date
+        ):
+            await update.message.reply_text(f'Событие "{event_name}" добавлено!')
+        else:
+            await update.message.reply_text(f'Ошибка при добавлении события')
+    except ValueError:
+        await update.message.reply_text(f'Неверный формат, попробуйте ещё раз')
+        return States.ADD_EVENT
+
+    calendar.user_states[user.id] = None
+    return ConversationHandler.END
 
 async def show_events(update, context):
-    calendar = Calendar()
-    user_id = update.message.from_user.id
-    events = await calendar.get_events(user_id)
+    calendar = context.bot_data['calendar']
+    user = update.message.from_user
+    events = await calendar.get_events(user.id)
 
     if not events:
         await update.message.reply_text("У вас нет запланированных событий.")
         return
 
-    response = 'Ваши события:\n'
+    response = "Ваши события:\n"
     for i, (event_name, event_date) in enumerate(events, 1):
         response += f"{i}) {event_name} ({event_date})\n"
 
     await update.message.reply_text(response)
 
 async def delete_event(update, context):
-    calendar = Calendar()
-    user_id = update.message.from_user.id
-    events = await calendar.get_events(user_id)
+    user = update.message.from_user
+    calendar = context.bot_data['calendar']
+    events = await calendar.get_events(user.id)
 
     if not events:
-        await update.message.reply_text("У вас нет событий для удаления")
-        return
+        return await update.message.reply_text("У вас нет событий для удаления")
+
+    response = 'Ваши события:\n'
+    for i, (event_name, event_date) in enumerate(events, 1):
+        response += (f"{i}) {event_name} ({event_date})\n"
+                     f"Какое событие удалить?\n")
+    await update.message.reply_text(response)
+
+    calendar.user_states[user.id] = States.DELETE_EVENT
+    return States.DELETE_EVENT
+
+async def handle_delete_event(update, context):
+    user = update.message.from_user
+    calendar = context.bot_data['calendar']
 
     try:
-        event_num = int(context.args[0])
-        events = await calendar.get_events(user_id)
-
-        if not 1 <= event_num <= len(events):
-            await update.message.reply_text("Неверный номер события")
-            return
-
-        event_id = events[event_num-1][0]
-        if await calendar.delete_event(user_id, event_id):
-            await update.message.reply_text('Событие успешно удалено')
+        event_num = int(update.message.text)
+        events = await calendar.get_events(user.id)
+        if 1 <= event_num <= len(events):
+            event_name = events[event_num - 1][0]
+            if await calendar.delete_event(user.id, event_name):
+                await update.message.reply_text('Событие удалено!')
+            else:
+                await update.message.reply_text('Ошибка удаления')
         else:
-            await update.message.reply_text('Ошибка при удалении события')
+            await update.message.reply_text('Неверный номер')
     except ValueError:
-        await update.message.reply_text('Номер события должен быть числом')
+        await update.message.reply_text('Введите номер события')
+    return ConversationHandler.END
+
+async def cancel(update, context):
+    user = update.message.from_user
+    calendar = context.bot_data['calendar']
+    calendar.user_states[user.id] = None
+
+    await update.message.reply_text("Операция отменена")
+    return ConversationHandler.END
 
 def main():
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('register', register)],
-        states={
-            REGISTER_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_password)],
-        },
-        fallbacks=[]
-    )
     application = Application.builder().token(API_TOKEN).build()
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('addevent', add_event))
-    application.add_handler(CommandHandler('events', show_events))
-    application.add_handler(CommandHandler('delevent', delete_event))
+    application.bot_data['calendar'] = Calendar()
 
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler('start', start),
+            CommandHandler('addevent', add_event),
+            CommandHandler('register', register),
+            CommandHandler('events', show_events),
+            CommandHandler('delevent', delete_event)
+        ],
+        states={
+            States.REGISTER: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_password)],
+            States.ADD_EVENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_add_event)],
+            States.DELETE_EVENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_event)],
+            States.VIEW_EVENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, show_events)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
+    )
+
+    application.add_handler(conv_handler)
     application.run_polling()
 
 if __name__ == '__main__':
