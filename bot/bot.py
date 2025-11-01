@@ -1450,7 +1450,6 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_meeting_response, pattern='^(accept|decline)_'))
     application.add_handler(export_conv_handler)
 
-    application.add_handler(conv_handler)
     application.run_polling()
 
 if __name__ == '__main__':

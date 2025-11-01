@@ -1,0 +1,6 @@
+psycopg2-binary~=2.9.10
+Django~=5.2.6
+python-telegram-bot~=22.3
+dotenv~=0.9.9
+python-dotenv~=1.1.1
+asgiref~=3.8.1
