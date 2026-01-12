@@ -1,0 +1,10 @@
+# .gitignore
+secrets.py
+__pycache__/
+*.pyc
+.env
+venv/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
