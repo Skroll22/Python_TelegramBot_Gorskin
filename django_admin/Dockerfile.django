@@ -1,0 +1,40 @@
+FROM python:3.10-slim
+
+# Устанавливаем системные зависимости
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        libpq-dev \
+        curl \
+        netcat-traditional \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем пользователя для безопасности
+RUN useradd -m -u 1000 django && \
+    mkdir -p /app && \
+    chown -R django:django /app
+
+# Устанавливаем рабочую директорию
+WORKDIR /app
+
+# Копируем зависимости
+COPY requirements/ /app/requirements/
+
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements/django.txt
+
+# Копируем код приложения
+COPY --chown=django:django . /app/
+
+# Переключаемся на пользователя django
+USER django
+
+# Создаем статическую папку
+RUN mkdir -p /app/staticfiles
+
+# Настройка порта
+EXPOSE 8000
+
+# Точка входа
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]

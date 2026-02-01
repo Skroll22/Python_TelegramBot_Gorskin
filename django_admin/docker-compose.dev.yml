@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: telegram_calendar
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 3520
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  django:
+    build:
+      context: .
+      dockerfile: Dockerfile.django
+    environment:
+      DEBUG: True
+      SECRET_KEY: dev-secret-key
+      DB_NAME: telegram_calendar
+      DB_USER: postgres
+      DB_PASSWORD: 3520
+      DB_HOST: postgres
+      DB_PORT: 5432
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "
+        python manage.py migrate --noinput &&
+        python manage.py runserver 0.0.0.0:8000
+      "
+    depends_on:
+      - postgres
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    environment:
+      DEBUG: True
+      SECRET_KEY: dev-secret-key
+      DB_NAME: telegram_calendar
+      DB_USER: postgres
+      DB_PASSWORD: 3520
+      DB_HOST: postgres
+      DB_PORT: 5432
+      API_TOKEN: 8575997332:AAFB_C2gPPcPhwaNjNCFhF1FZ_0xylT8mP
+    volumes:
+      - .:/app
+    depends_on:
+      - postgres
+      - django
+    command: >
+      sh -c "
+          sleep 10 &&
+          python calendar_bot.py
+        "
+
+volumes:
+  postgres_data:
+  static_volume:

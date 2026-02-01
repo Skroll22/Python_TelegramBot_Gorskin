@@ -1,0 +1,32 @@
+FROM python:3.10-slim
+
+# Устанавливаем системные зависимости
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаем пользователя для безопасности
+RUN useradd -m -u 1001 bot && \
+    mkdir -p /app && \
+    chown -R bot:bot /app
+
+# Устанавливаем рабочую директорию
+WORKDIR /app
+
+# Копируем зависимости
+COPY requirements/ /app/requirements/
+
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements/bot.txt
+
+# Копируем код приложения
+COPY --chown=bot:bot . /app/
+
+# Переключаемся на пользователя bot
+USER bot
+
+# Точка входа
+CMD ["python", "telegram_bot/calendar_bot.py"]
