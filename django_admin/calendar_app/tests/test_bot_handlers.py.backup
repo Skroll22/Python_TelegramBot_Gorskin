@@ -1,0 +1,244 @@
+import pytest
+import asyncio
+from unittest.mock import Mock, patch, AsyncMock
+from datetime import datetime, timedelta
+from telegram import Update, Message, Chat, User as TelegramUser
+from telegram.ext import ContextTypes
+
+from django_admin.calendar_bot import (
+    start_handler, help_handler, profile_handler,
+    create_handler, list_handler, today_handler,
+    stats_handler, meetings_handler, share_handler,
+    export_handler, create_meeting_handler
+)
+from django_admin.calendar_app.models import TelegramUser as DjangoUser
+from django_admin.calendar_app.factories import TelegramUserFactory
+
+
+@pytest.fixture
+def mock_update():
+    """Фикстура для mock обновления Telegram"""
+    update = Mock(spec=Update)
+    update.effective_user = Mock(spec=TelegramUser)
+    update.effective_user.id = 123456789
+    update.effective_user.username = "test_user"
+    update.effective_user.first_name = "Test"
+    update.effective_user.last_name = "User"
+    update.effective_user.language_code = "ru"
+
+    update.message = Mock(spec=Message)
+    update.message.reply_text = AsyncMock()
+
+    return update
+
+
+@pytest.fixture
+def mock_context():
+    """Фикстура для mock контекста"""
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.user_data = {}
+    return context
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db
+class TestBotCommandHandlers:
+    """Тесты обработчиков команд бота"""
+
+    async def test_start_handler(self, mock_update, mock_context):
+        """Тест обработчика /start"""
+        with patch('calendar_app.calendar_bot.get_or_create_user', AsyncMock()) as mock_get_user:
+            mock_get_user.return_value = TelegramUserFactory()
+
+            with patch('calendar_app.calendar_bot.get_all_users_count', AsyncMock()) as mock_count:
+                mock_count.return_value = 100
+
+                with patch('calendar_app.calendar_bot.log_user_interaction', AsyncMock()):
+                    await start_handler(mock_update, mock_context)
+
+                    # Проверяем, что было отправлено сообщение
+                    mock_update.message.reply_text.assert_called_once()
+
+                    # Проверяем содержимое сообщения
+                    call_args = mock_update.message.reply_text.call_args[0][0]
+                    assert "Привет" in call_args
+                    assert "Test" in call_args
+                    assert "100" in call_args
+
+    async def test_help_handler(self, mock_update, mock_context):
+        """Тест обработчика /help"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            await help_handler(mock_update, mock_context)
+
+            mock_update.message.reply_text.assert_called_once()
+
+            call_args = mock_update.message.reply_text.call_args[0][0]
+            assert "Справка" in call_args or "командам" in call_args
+            assert "/start" in call_args
+            assert "/help" in call_args
+            assert "/create" in call_args
+
+    async def test_profile_handler(self, mock_update, mock_context):
+        """Тест обработчика /profile"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            # Создаем mock пользователя в базе данных
+            django_user = TelegramUserFactory(telegram_id=mock_update.effective_user.id)
+
+            with patch('calendar_app.calendar_bot.asyncio.to_thread', AsyncMock()) as mock_to_thread:
+                # Мокаем синхронные вызовы
+                mock_to_thread.return_value = (django_user, {'total_events': 5})
+
+                await profile_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "Ваш профиль" in call_args
+                assert str(django_user.telegram_id) in call_args
+
+    async def test_create_handler(self, mock_update, mock_context):
+        """Тест обработчика /create"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            with patch('calendar_app.calendar_bot.log_user_interaction', AsyncMock()):
+                await create_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "Создание нового события" in call_args
+                assert "Введите дату" in call_args
+
+    async def test_list_handler_no_events(self, mock_update, mock_context):
+        """Тест обработчика /list без событий"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            with patch('calendar_app.calendar_bot.get_user_events', AsyncMock()) as mock_get_events:
+                mock_get_events.return_value = []
+
+                await list_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "нет событий" in call_args
+
+    async def test_list_handler_with_events(self, mock_update, mock_context):
+        """Тест обработчика /list с событиями"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            # Создаем mock события
+            from django_admin.calendar_app.models import CalendarEvent
+            mock_events = [
+                Mock(spec=CalendarEvent, id=1, title="Test Event 1",
+                     date=datetime.now().date(), description="Test Description 1",
+                     is_public=True, created_at=datetime.now()),
+                Mock(spec=CalendarEvent, id=2, title="Test Event 2",
+                     date=datetime.now().date() + timedelta(days=1),
+                     description="Test Description 2", is_public=False,
+                     created_at=datetime.now())
+            ]
+
+            with patch('calendar_app.calendar_bot.get_user_events', AsyncMock()) as mock_get_events:
+                mock_get_events.return_value = mock_events
+
+                await list_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "Все ваши события" in call_args
+                assert "Test Event 1" in call_args
+                assert "Test Event 2" in call_args
+
+    async def test_today_handler(self, mock_update, mock_context):
+        """Тест обработчика /today"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            with patch('calendar_app.calendar_bot.get_today_events', AsyncMock()) as mock_get_today:
+                mock_get_today.return_value = []
+
+                await today_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "нет запланированных событий" in call_args
+
+    async def test_stats_handler(self, mock_update, mock_context):
+        """Тест обработчика /stats"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            mock_stats = {
+                'total_events': 10,
+                'today_events': 2,
+                'future_events': 5,
+                'past_events': 3,
+                'closest_event': {
+                    'title': 'Next Event',
+                    'date': datetime.now().date() + timedelta(days=2),
+                    'id': 1
+                }
+            }
+
+            with patch('calendar_app.calendar_bot.get_user_stats', AsyncMock()) as mock_get_stats:
+                mock_get_stats.return_value = mock_stats
+
+                await stats_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "Статистика" in call_args
+                assert "10" in call_args  # total_events
+                assert "Next Event" in call_args
+
+    async def test_meetings_handler(self, mock_update, mock_context):
+        """Тест обработчика /meetings"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            with patch('calendar_app.calendar_bot.get_user_meetings', AsyncMock()) as mock_get_meetings:
+                mock_get_meetings.return_value = []
+
+                await meetings_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "нет встреч" in call_args
+
+    async def test_share_handler_no_private_events(self, mock_update, mock_context):
+        """Тест обработчика /share без приватных событий"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            with patch('calendar_app.calendar_bot.log_user_interaction', AsyncMock()):
+                with patch('calendar_app.calendar_bot.get_user_events_with_privacy', AsyncMock()) as mock_get_events:
+                    mock_get_events.return_value = []
+
+                    await share_handler(mock_update, mock_context)
+
+                    mock_update.message.reply_text.assert_called_once()
+
+                    call_args = mock_update.message.reply_text.call_args[0][0]
+                    assert "нет приватных событий" in call_args
+
+    async def test_export_handler_no_events(self, mock_update, mock_context):
+        """Тест обработчика /export без событий"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            with patch('calendar_app.calendar_bot.log_user_interaction', AsyncMock()):
+                with patch('calendar_app.calendar_bot.get_user_events_count', AsyncMock()) as mock_events_count:
+                    with patch('calendar_app.calendar_bot.get_user_meetings_count', AsyncMock()) as mock_meetings_count:
+                        mock_events_count.return_value = 0
+                        mock_meetings_count.return_value = 0
+
+                        await export_handler(mock_update, mock_context)
+
+                        mock_update.message.reply_text.assert_called_once()
+
+                        call_args = mock_update.message.reply_text.call_args[0][0]
+                        assert "нет событий для экспорта" in call_args
+
+    async def test_create_meeting_handler(self, mock_update, mock_context):
+        """Тест обработчика /create_meeting"""
+        with patch('calendar_app.calendar_bot.ensure_registered', AsyncMock(return_value=True)):
+            with patch('calendar_app.calendar_bot.log_user_interaction', AsyncMock()):
+                await create_meeting_handler(mock_update, mock_context)
+
+                mock_update.message.reply_text.assert_called_once()
+
+                call_args = mock_update.message.reply_text.call_args[0][0]
+                assert "Создание новой встречи" in call_args
+                assert "Введите дату" in call_args

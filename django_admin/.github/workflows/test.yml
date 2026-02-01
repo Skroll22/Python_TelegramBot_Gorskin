@@ -1,0 +1,75 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_calendar
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        cd django_admin
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run migrations
+      run: |
+        cd django_admin
+        python manage.py migrate
+      env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_calendar
+        SECRET_KEY: ${{ secrets.SECRET_KEY }}
+
+    - name: Run tests with pytest
+      run: |
+        cd django_admin
+        pytest \
+          --cov=calendar_app \
+          --cov-report=xml \
+          --cov-report=html \
+          --junitxml=junit.xml \
+          -v
+      env:
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_calendar
+        SECRET_KEY: ${{ secrets.SECRET_KEY }}
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./django_admin/coverage.xml
+        flags: unittests
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: |
+          ./django_admin/junit.xml
+          ./django_admin/coverage.xml
+          ./django_admin/coverage_html/
